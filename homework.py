@@ -30,22 +30,13 @@ HOMEWORK_VERDICTS: dict[str, str] = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    filename='program.log',
-    filemode='w',
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler())
 
 
 def check_tokens():
     """Проверка доступности переменных окружения."""
-    if not all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
-        logger.critical('Отсутствуют обязательные переменные окружения')
-        return False
-    return True
+    return all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID])
 
 
 def send_message(bot: telegram.Bot, message: str) -> None:
@@ -63,8 +54,9 @@ def send_message(bot: telegram.Bot, message: str) -> None:
         logger.info('Сообщение отправлено успешно')
 
 
-def get_api_answer(timestamp: str) -> dict:
+def get_api_answer(current_timestamp: str) -> dict:
     """Получение данных от API."""
+    timestamp = current_timestamp or int(time.time())
     payload = {'from_date': timestamp}
     try:
         homework_statuses = requests.get(
@@ -90,21 +82,17 @@ def get_api_answer(timestamp: str) -> dict:
         )
 
 
-def check_response(response: dict) -> dict:
+def check_response(response: dict) -> list:
     """Проверка данных в response."""
     if not isinstance(response, dict):
         raise TypeError('Неверный тип данных ответа')
     if 'homeworks' not in response:
         logger.info('Ключ homeworks или response имеет неправильное значение')
         raise KeyError('Ответ не содержит ключа homeworks')
-    if not isinstance(response['homeworks'], list):
+    list_hw = response['homeworks']
+    if not isinstance(list_hw, list):
         raise TypeError('Значение ключа homeworks не является списком')
-    homeworks = response['homeworks']
-    for hw in homeworks:
-        status = hw.get('status')
-        if status is not None and status not in HOMEWORK_VERDICTS:
-            logger.info(f'Получен недокументированный статус: {status}')
-    return homeworks
+    return list_hw
 
 
 def parse_status(homework: dict) -> str:
@@ -112,7 +100,7 @@ def parse_status(homework: dict) -> str:
     homework_name = homework.get('homework_name')
     status = homework.get('status')
     if homework_name is None:
-        logger.error('Нет ключа homework_name')
+        logger.error('Неверная информацию о домашней работе')
         raise KeyError
     if isinstance(status, str) and status not in HOMEWORK_VERDICTS:
         logger.error(f'Неизвестный статус: {status}')
@@ -131,19 +119,26 @@ def main() -> None:
         )
         logger.critical(er_txt)
         sys.exit('Принудительное завершение из-за нехватки токенов')
+    update_status = {'name': '', 'state': ''}
+    status = {'name': '', 'state': ''}
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
     while True:
         try:
-            response = get_api_answer(0)
+            response = get_api_answer(current_timestamp)
             homeworks = check_response(response)
-            for hw in homeworks:
-                if current_timestamp != hw['status']:
-                    message = parse_status(hw)
-                    send_message(bot, message)
-                    current_timestamp = hw['status']
             if not homeworks:
-                logger.info('Новых работ не найдено')
+                message = 'Новых работ не обнаружено'
+                send_message(bot, message)
+            else:
+                message = parse_status(homeworks[0])
+                current_timestamp = response.get('current_date')
+                status[response.get('homework_name')] = response.get('status')
+                if status != update_status and status is not None:
+                    update_status = status
+                    send_message(bot, message)
+                else:
+                    logger.debug('Статус работы не изменен')
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logger.error(message)
@@ -153,4 +148,11 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        filename='programm.log',
+        encoding='utf-8',
+        filemode='w',
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     main()
